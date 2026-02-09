@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/**
+ * =========================
+ * ENUMS
+ * =========================
+ */
+
 enum TipoTransacao {
   RECEITA
   DESPESA
@@ -18,7 +24,8 @@ enum StatusPagamento {
 }
 
 enum TipoConta {
-  CONTA
+  CARTEIRA
+  CONTA_CORRENTE
   CARTAO
 }
 
@@ -27,6 +34,20 @@ enum StatusFatura {
   FECHADA
   PAGA
 }
+
+enum OrigemTransacao {
+  MANUAL
+  PARCELA
+  IMPORTACAO
+  ESTORNO
+  AJUSTE_SALDO
+}
+
+/**
+ * =========================
+ * AUTH
+ * =========================
+ */
 
 model Usuario {
   id        String @id @default(uuid())
@@ -41,11 +62,13 @@ model Usuario {
   transacoes Transacao[]
   orcamentos Orcamento[]
 
-  planosParcelamento PlanoParcelamento[]
-  faturasCartao      FaturaCartao[]
+  ajustesSaldo  AjusteSaldo[]
+  logsAuditoria LogAuditoria[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  planoParcelamentos PlanoParcelamento[]
+  faturaCartaos      FaturaCartao[]
 
   @@map("usuarios")
 }
@@ -65,6 +88,12 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/**
+ * =========================
+ * FINANCE CORE
+ * =========================
+ */
+
 model Categoria {
   id   String @id @default(uuid())
   nome String
@@ -75,7 +104,7 @@ model Categoria {
   transacoes Transacao[]
   orcamentos Orcamento[]
 
-  // Parcelamentos
+  // para parcelamento (opcional)
   planosParcelamento PlanoParcelamento[]
 
   createdAt DateTime @default(now())
@@ -89,10 +118,9 @@ model Conta {
   id   String @id @default(uuid())
   nome String
 
-  // ✅ Conta normal ou Cartão
-  tipo TipoConta @default(CONTA)
+  tipo TipoConta @default(CARTEIRA)
 
-  // ✅ Só para CARTAO (1..28)
+  // cartão de crédito (se tipo = CARTAO)
   fechamentoDia Int?
   vencimentoDia Int?
 
@@ -101,11 +129,14 @@ model Conta {
 
   transacoes Transacao[]
 
-  // Parcelamentos vinculados a esta conta (ex: cartão)
+  // parcelamento vinculado
   planosParcelamento PlanoParcelamento[]
 
-  // Faturas do cartão (se tipo = CARTAO)
+  // faturas do cartão
   faturasCartao FaturaCartao[]
+
+  // ajustes de saldo
+  ajustesSaldo AjusteSaldo[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -131,17 +162,37 @@ model Transacao {
   contaId String?
   conta   Conta?  @relation(fields: [contaId], references: [id], onDelete: SetNull)
 
-  // Parcela (se essa transação veio de um parcelamento)
-  parcela Parcela?
+  // ✅ (1) ESTORNO + rastreabilidade
+  origem              OrigemTransacao @default(MANUAL)
+  estornadaEm         DateTime?
+  transacaoOriginalId String?
+  transacaoOriginal   Transacao?      @relation("EstornoOriginal", fields: [transacaoOriginalId], references: [id], onDelete: SetNull)
+  estornos            Transacao[]     @relation("EstornoOriginal")
+
+  // ✅ (2) ajuste de saldo pode vincular aqui
+  ajusteSaldo AjusteSaldo?
+
+  // ✅ (cartão) se você quiser linkar transação na fatura (opcional)
+  faturaCartaoId String?
+  faturaCartao   FaturaCartao? @relation(fields: [faturaCartaoId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  parcela   Parcela?
 
   @@index([usuarioId])
   @@index([categoriaId])
   @@index([contaId])
+  @@index([transacaoOriginalId])
+  @@index([faturaCartaoId])
   @@map("transacoes")
 }
+
+/**
+ * =========================
+ * BUDGETS + ALERTS
+ * =========================
+ */
 
 model Orcamento {
   id          String  @id @default(uuid())
@@ -179,15 +230,20 @@ model AlertaOrcamento {
   @@map("alertas_orcamento")
 }
 
+/**
+ * =========================
+ * PARCELAMENTOS
+ * =========================
+ */
+
 model PlanoParcelamento {
   id                  String  @id @default(uuid())
   descricao           String
   total               Decimal
   numeroParcelas      Int
   primeiraCompetencia String // "YYYY-MM" ex: "2026-02"
-
-  metodoPagamento String?
-  estabelecimento String?
+  metodoPagamento     String?
+  estabelecimento     String?
 
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
@@ -231,33 +287,94 @@ model Parcela {
   @@map("parcelas")
 }
 
+/**
+ * =========================
+ * CARTÃO DE CRÉDITO - FATURAS
+ * =========================
+ */
+
 model FaturaCartao {
-  id          String @id @default(uuid())
-  competencia String // "YYYY-MM" (competência do vencimento, ex: "2026-03")
+  id          String       @id @default(uuid())
+  competencia String // mês do vencimento "YYYY-MM"
+  status      StatusFatura @default(ABERTA)
 
   inicio     DateTime
   fim        DateTime
   fechamento DateTime
   vencimento DateTime
 
-  status StatusFatura @default(ABERTA)
+  totalPrevisto Decimal @default(0)
+  totalPago     Decimal @default(0)
 
-  // Dono (multi-tenant)
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
-  // Cartão
   contaId String
   conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
 
-  totalPrevisto Decimal @default(0)
-  totalPago     Decimal @default(0)
+  // opcional: se quiser linkar transações a fatura
+  transacoes Transacao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([contaId, competencia])
-  @@index([usuarioId, competencia])
-  @@index([contaId])
+  @@unique([contaId, competencia], name: "contaId_competencia")
+  @@index([usuarioId])
+  @@index([contaId, competencia])
   @@map("faturas_cartao")
+}
+
+/**
+ * =========================
+ * (2) AJUSTES DE SALDO
+ * =========================
+ */
+
+model AjusteSaldo {
+  id String @id @default(uuid())
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  contaId String
+  conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
+
+  data       DateTime
+  valor      Decimal
+  motivo     String
+  referencia String?
+
+  transacaoId String?    @unique
+  transacao   Transacao? @relation(fields: [transacaoId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([usuarioId])
+  @@index([contaId])
+  @@map("ajustes_saldo")
+}
+
+/**
+ * =========================
+ * (4) LOG DE AUDITORIA
+ * =========================
+ */
+
+model LogAuditoria {
+  id        String   @id @default(uuid())
+  usuarioId String?
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  acao       String // ex: "TRANSACTION_REVERSE", "BALANCE_ADJUST", "INVOICE_REOPEN", "HTTP_POST"
+  entidade   String // ex: "transacoes", "ajustes_saldo", "faturas_cartao", "http"
+  entidadeId String?
+  detalhes   Json?
+  ip         String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([usuarioId])
+  @@index([acao])
+  @@map("log_auditoria")
 }

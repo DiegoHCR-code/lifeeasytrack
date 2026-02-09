@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { AuthService } from "./auth.service";
+import type { AuthRequest } from "@shared/middlewares/authMiddleware";
 
 export class AuthController {
   private service = new AuthService();
@@ -21,6 +22,11 @@ export class AuthController {
 
   logout = async (req: Request, res: Response) => {
     const result = await this.service.logout(req.body);
+    return res.status(200).json(result);
+  };
+
+  me = async (req: AuthRequest, res: Response) => {
+    const result = await this.service.me(req.userId!);
     return res.status(200).json(result);
   };
 }

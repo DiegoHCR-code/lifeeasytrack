@@ -119,4 +119,14 @@ export class AuthService {
 
     return { ok: true };
   }
+
+    async me(userId: string) {
+    const user = await prisma.usuario.findUnique({
+      where: { id: userId },
+      select: { id: true, nome: true, email: true, createdAt: true }
+    });
+
+    return { ok: true, user };
+  }
+
 }

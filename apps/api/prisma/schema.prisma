@@ -17,6 +17,17 @@ enum StatusPagamento {
   PENDENTE
 }
 
+enum TipoConta {
+  CONTA
+  CARTAO
+}
+
+enum StatusFatura {
+  ABERTA
+  FECHADA
+  PAGA
+}
+
 model Usuario {
   id        String @id @default(uuid())
   nome      String
@@ -31,6 +42,7 @@ model Usuario {
   orcamentos Orcamento[]
 
   planosParcelamento PlanoParcelamento[]
+  faturasCartao      FaturaCartao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -60,8 +72,10 @@ model Categoria {
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
-  transacoes         Transacao[]
-  orcamentos         Orcamento[]
+  transacoes Transacao[]
+  orcamentos Orcamento[]
+
+  // Parcelamentos
   planosParcelamento PlanoParcelamento[]
 
   createdAt DateTime @default(now())
@@ -75,11 +89,23 @@ model Conta {
   id   String @id @default(uuid())
   nome String
 
+  // ✅ Conta normal ou Cartão
+  tipo TipoConta @default(CONTA)
+
+  // ✅ Só para CARTAO (1..28)
+  fechamentoDia Int?
+  vencimentoDia Int?
+
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
-  transacoes         Transacao[]
+  transacoes Transacao[]
+
+  // Parcelamentos vinculados a esta conta (ex: cartão)
   planosParcelamento PlanoParcelamento[]
+
+  // Faturas do cartão (se tipo = CARTAO)
+  faturasCartao FaturaCartao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -105,6 +131,7 @@ model Transacao {
   contaId String?
   conta   Conta?  @relation(fields: [contaId], references: [id], onDelete: SetNull)
 
+  // Parcela (se essa transação veio de um parcelamento)
   parcela Parcela?
 
   createdAt DateTime @default(now())
@@ -159,8 +186,8 @@ model PlanoParcelamento {
   numeroParcelas      Int
   primeiraCompetencia String // "YYYY-MM" ex: "2026-02"
 
-  metodoPagamento String? // opcional (ex: "Cartão Nubank")
-  estabelecimento String? // opcional
+  metodoPagamento String?
+  estabelecimento String?
 
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
@@ -192,7 +219,7 @@ model Parcela {
   planoId String
   plano   PlanoParcelamento @relation(fields: [planoId], references: [id], onDelete: Cascade)
 
-  // ligação com a transação gerada (1:1)
+  // 1:1 com a transação gerada
   transacaoId String    @unique
   transacao   Transacao @relation(fields: [transacaoId], references: [id], onDelete: Cascade)
 
@@ -202,4 +229,35 @@ model Parcela {
   @@index([planoId])
   @@index([competencia])
   @@map("parcelas")
+}
+
+model FaturaCartao {
+  id          String @id @default(uuid())
+  competencia String // "YYYY-MM" (competência do vencimento, ex: "2026-03")
+
+  inicio     DateTime
+  fim        DateTime
+  fechamento DateTime
+  vencimento DateTime
+
+  status StatusFatura @default(ABERTA)
+
+  // Dono (multi-tenant)
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  // Cartão
+  contaId String
+  conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
+
+  totalPrevisto Decimal @default(0)
+  totalPago     Decimal @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([contaId, competencia])
+  @@index([usuarioId, competencia])
+  @@index([contaId])
+  @@map("faturas_cartao")
 }

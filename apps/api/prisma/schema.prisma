@@ -7,13 +7,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum TipoTransacao {
+  RECEITA
+  DESPESA
+}
+
+enum StatusPagamento {
+  PAGO
+  PENDENTE
+}
+
 model Usuario {
-  id        String   @id @default(uuid())
+  id        String @id @default(uuid())
   nome      String
-  email     String   @unique
+  email     String @unique
   senhaHash String
 
   refreshTokens RefreshToken[]
+
+  categorias Categoria[]
+  contas     Conta[]
+  transacoes Transacao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -28,10 +42,68 @@ model RefreshToken {
   expiresAt DateTime
 
   usuarioId String
-  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
   @@index([usuarioId])
   @@map("refresh_tokens")
+}
+
+model Categoria {
+  id   String @id @default(uuid())
+  nome String
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  transacoes Transacao[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([usuarioId])
+  @@map("categorias")
+}
+
+model Conta {
+  id   String @id @default(uuid())
+  nome String
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  transacoes Transacao[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([usuarioId])
+  @@map("contas")
+}
+
+model Transacao {
+  id        String          @id @default(uuid())
+  descricao String
+  valor     Decimal
+  data      DateTime
+  tipo      TipoTransacao
+  status    StatusPagamento @default(PENDENTE)
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  categoriaId String?
+  categoria   Categoria? @relation(fields: [categoriaId], references: [id], onDelete: SetNull)
+
+  contaId String?
+  conta   Conta?  @relation(fields: [contaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([usuarioId])
+  @@index([categoriaId])
+  @@index([contaId])
+  @@map("transacoes")
 }

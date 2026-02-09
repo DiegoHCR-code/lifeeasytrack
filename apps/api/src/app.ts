@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { authRoutes } from "@modules/auth/auth.routes";
+import { financeRoutes } from "@modules/finance/finance.routes";
 import { errorMiddleware } from "@shared/middlewares/errorMiddleware";
 
 export const app = express();
@@ -12,5 +13,5 @@ app.get("/", (_req, res) => res.json({ name: "LifeEasyTrack API", ok: true }));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.use("/api/auth", authRoutes);
-
+app.use("/api/finance", financeRoutes);
 app.use(errorMiddleware);

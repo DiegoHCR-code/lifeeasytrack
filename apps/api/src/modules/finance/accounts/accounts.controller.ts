@@ -1,6 +1,6 @@
 import type { Response } from "express";
 import type { AuthRequest } from "@shared/middlewares/authMiddleware";
-import { AccountsService } from "./accounts.service";
+import { AccountsService } from "@modules/finance/accounts";
 
 export class AccountsController {
   private service = new AccountsService();
@@ -16,12 +16,12 @@ export class AccountsController {
   };
 
   update = async (req: AuthRequest, res: Response) => {
-    const result = await this.service.update(req.userId!, req.params.id, req.body);
+    const result = await this.service.update(req.userId!, req.params.id as string, req.body);
     res.status(result.ok ? 200 : 404).json(result);
   };
 
   remove = async (req: AuthRequest, res: Response) => {
-    const result = await this.service.remove(req.userId!, req.params.id);
+    const result = await this.service.update(req.userId!, req.params.id as string, req.body);
     res.status(result.ok ? 200 : 404).json(result);
   };
 }

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "@shared/http/asyncHandler";
-import { CategoriesController } from "./categories.controller";
+import { CategoriesController } from "@modules/finance/categories";
 
 export const categoriesRoutes = Router();
 const controller = new CategoriesController();

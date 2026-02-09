@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { authMiddleware } from "@shared/middlewares/authMiddleware";
-import { categoriesRoutes } from "./categories/categories.routes";
-import { accountsRoutes } from "./accounts/accounts.routes";
-import { transactionsRoutes } from "./transactions/transactions.routes";
-
+import { categoriesRoutes } from "@modules/finance/categories/categories.routes";
+import { accountsRoutes } from "@modules/finance/accounts/accounts.routes";
+import { transactionsRoutes } from "@modules/finance/transactions/transactions.routes";
+import { budgetsRoutes } from "@modules/finance/budgets/budgets.routes";
 export const financeRoutes = Router();
 
 financeRoutes.use(authMiddleware);
@@ -11,3 +11,4 @@ financeRoutes.use(authMiddleware);
 financeRoutes.use("/categories", categoriesRoutes);
 financeRoutes.use("/accounts", accountsRoutes);
 financeRoutes.use("/transactions", transactionsRoutes);
+financeRoutes.use("/budgets", budgetsRoutes);

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "@shared/http/asyncHandler";
-import { TransactionsController } from "./transactions.controller";
+import { TransactionsController } from "@modules/finance/transactions";
 
 export const transactionsRoutes = Router();
 const controller = new TransactionsController();

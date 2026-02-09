@@ -29,8 +29,9 @@ model Usuario {
   contas     Conta[]
   transacoes Transacao[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  orcamentos Orcamento[]
 
   @@map("usuarios")
 }
@@ -59,8 +60,9 @@ model Categoria {
 
   transacoes Transacao[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  orcamentos Orcamento[]
 
   @@index([usuarioId])
   @@map("categorias")
@@ -106,4 +108,40 @@ model Transacao {
   @@index([categoriaId])
   @@index([contaId])
   @@map("transacoes")
+}
+
+model Orcamento {
+  id          String  @id @default(uuid())
+  competencia String // "YYYY-MM" ex: "2026-02"
+  limite      Decimal
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  categoriaId String
+  categoria   Categoria @relation(fields: [categoriaId], references: [id], onDelete: Cascade)
+
+  alertas AlertaOrcamento[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([usuarioId, categoriaId, competencia])
+  @@index([usuarioId, competencia])
+  @@map("orcamentos")
+}
+
+model AlertaOrcamento {
+  id         String  @id @default(uuid())
+  percentual Int // ex: 80, 90, 100
+  ativo      Boolean @default(true)
+
+  orcamentoId String
+  orcamento   Orcamento @relation(fields: [orcamentoId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([orcamentoId, percentual])
+  @@index([orcamentoId])
+  @@map("alertas_orcamento")
 }

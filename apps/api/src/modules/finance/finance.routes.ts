@@ -6,6 +6,7 @@ import { transactionsRoutes } from "@modules/finance/transactions/transactions.r
 import { budgetsRoutes } from "@modules/finance/budgets/budgets.routes";
 import { installmentsRoutes } from "@modules/finance/installments/installments.routes";
 import { creditCardsRoutes } from "@modules/finance/credit-cards/credit-cards.routes";
+import { creditCardInvoicesRoutes } from "./credit-cards/credit-card-invoices.routes";
 
 export const financeRoutes = Router();
 
@@ -17,3 +18,4 @@ financeRoutes.use("/transactions", transactionsRoutes);
 financeRoutes.use("/budgets", budgetsRoutes);
 financeRoutes.use("/installments", installmentsRoutes);
 financeRoutes.use("/cards", creditCardsRoutes);
+financeRoutes.use("/card/invoices", creditCardInvoicesRoutes);

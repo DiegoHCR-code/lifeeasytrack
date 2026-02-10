@@ -41,6 +41,7 @@ enum OrigemTransacao {
   IMPORTACAO
   ESTORNO
   AJUSTE_SALDO
+  CORRECAO_FATURA
 }
 
 /**
@@ -62,13 +63,13 @@ model Usuario {
   transacoes Transacao[]
   orcamentos Orcamento[]
 
-  ajustesSaldo  AjusteSaldo[]
-  logsAuditoria LogAuditoria[]
+  ajustesSaldo       AjusteSaldo[]
+  logsAuditoria      LogAuditoria[]
+  planosParcelamento PlanoParcelamento[]
+  faturasCartao      FaturaCartao[]
 
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  planoParcelamentos PlanoParcelamento[]
-  faturaCartaos      FaturaCartao[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("usuarios")
 }
@@ -101,10 +102,8 @@ model Categoria {
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
-  transacoes Transacao[]
-  orcamentos Orcamento[]
-
-  // para parcelamento (opcional)
+  transacoes         Transacao[]
+  orcamentos         Orcamento[]
   planosParcelamento PlanoParcelamento[]
 
   createdAt DateTime @default(now())
@@ -129,14 +128,9 @@ model Conta {
 
   transacoes Transacao[]
 
-  // parcelamento vinculado
   planosParcelamento PlanoParcelamento[]
-
-  // faturas do cartão
-  faturasCartao FaturaCartao[]
-
-  // ajustes de saldo
-  ajustesSaldo AjusteSaldo[]
+  faturasCartao      FaturaCartao[]
+  ajustesSaldo       AjusteSaldo[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -162,23 +156,27 @@ model Transacao {
   contaId String?
   conta   Conta?  @relation(fields: [contaId], references: [id], onDelete: SetNull)
 
-  // ✅ (1) ESTORNO + rastreabilidade
-  origem              OrigemTransacao @default(MANUAL)
+  // ✅ origem (manual, parcela, estorno, etc.)
+  origem OrigemTransacao @default(MANUAL)
+
+  // ✅ ESTORNO (formal)
   estornadaEm         DateTime?
   transacaoOriginalId String?
-  transacaoOriginal   Transacao?      @relation("EstornoOriginal", fields: [transacaoOriginalId], references: [id], onDelete: SetNull)
-  estornos            Transacao[]     @relation("EstornoOriginal")
+  transacaoOriginal   Transacao?  @relation("EstornoOriginal", fields: [transacaoOriginalId], references: [id], onDelete: SetNull)
+  estornos            Transacao[] @relation("EstornoOriginal")
 
-  // ✅ (2) ajuste de saldo pode vincular aqui
-  ajusteSaldo AjusteSaldo?
-
-  // ✅ (cartão) se você quiser linkar transação na fatura (opcional)
+  // ✅ vínculo opcional com fatura do cartão (para bloqueios e auditoria)
   faturaCartaoId String?
   faturaCartao   FaturaCartao? @relation(fields: [faturaCartaoId], references: [id], onDelete: SetNull)
 
+  // ✅ ajuste de saldo 1:1 opcional (lado inverso)
+  ajusteSaldo AjusteSaldo?
+
+  // ✅ parcela 1:1 (quando a transação vem de parcelamento)
+  parcela Parcela?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  parcela   Parcela?
 
   @@index([usuarioId])
   @@index([categoriaId])
@@ -289,7 +287,7 @@ model Parcela {
 
 /**
  * =========================
- * CARTÃO DE CRÉDITO - FATURAS
+ * CARTÃO - FATURAS
  * =========================
  */
 
@@ -312,7 +310,6 @@ model FaturaCartao {
   contaId String
   conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
 
-  // opcional: se quiser linkar transações a fatura
   transacoes Transacao[]
 
   createdAt DateTime @default(now())
@@ -326,7 +323,7 @@ model FaturaCartao {
 
 /**
  * =========================
- * (2) AJUSTES DE SALDO
+ * AJUSTE MANUAL DE SALDO
  * =========================
  */
 
@@ -340,10 +337,11 @@ model AjusteSaldo {
   conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
 
   data       DateTime
-  valor      Decimal
+  valor      Decimal // pode ser positivo ou negativo
   motivo     String
   referencia String?
 
+  // ✅ 1:1 opcional (o erro que você teve foi aqui; agora está corrigido)
   transacaoId String?    @unique
   transacao   Transacao? @relation(fields: [transacaoId], references: [id], onDelete: SetNull)
 
@@ -356,7 +354,7 @@ model AjusteSaldo {
 
 /**
  * =========================
- * (4) LOG DE AUDITORIA
+ * LOG DE AUDITORIA
  * =========================
  */
 
@@ -365,8 +363,8 @@ model LogAuditoria {
   usuarioId String?
   usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
 
-  acao       String // ex: "TRANSACTION_REVERSE", "BALANCE_ADJUST", "INVOICE_REOPEN", "HTTP_POST"
-  entidade   String // ex: "transacoes", "ajustes_saldo", "faturas_cartao", "http"
+  acao       String
+  entidade   String
   entidadeId String?
   detalhes   Json?
   ip         String?

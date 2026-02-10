@@ -1,8 +1,9 @@
 import { prisma } from "@shared/db/prisma";
 import { z } from "zod";
 import { OrigemTransacao, Prisma, TipoTransacao } from "@prisma/client";
+import { auditLog } from "@shared/audit/auditLog";
 
-const reverseSchema = z.object({
+const schema = z.object({
   motivo: z.string().min(3),
   data: z.string().optional(), // ISO ou YYYY-MM-DD
 });
@@ -14,8 +15,8 @@ function parseDate(input?: string) {
 }
 
 export class ReversalsService {
-  async reverse(userId: string, transactionId: string, input: unknown) {
-    const data = reverseSchema.parse(input);
+  async reverse(userId: string, transactionId: string, input: unknown, meta?: any) {
+    const data = schema.parse(input);
 
     const original = await prisma.transacao.findFirst({
       where: { id: transactionId, usuarioId: userId },
@@ -24,10 +25,9 @@ export class ReversalsService {
     if (!original) return { ok: false, statusCode: 404, message: "Transação não encontrada" };
     if (original.estornadaEm) return { ok: false, statusCode: 409, message: "Transação já estornada" };
 
-    const invertedTipo: TipoTransacao =
-      original.tipo === "DESPESA" ? "RECEITA" : "DESPESA";
+    const invertedTipo: TipoTransacao = original.tipo === "DESPESA" ? "RECEITA" : "DESPESA";
 
-    const created = await prisma.$transaction(async (tx) => {
+    const reversal = await prisma.$transaction(async (tx) => {
       const estorno = await tx.transacao.create({
         data: {
           usuarioId: userId,
@@ -48,23 +48,20 @@ export class ReversalsService {
         data: { estornadaEm: new Date() },
       });
 
-      // auditoria
       await tx.logAuditoria.create({
-        data: {
+        data: auditLog({
           usuarioId: userId,
           acao: "TRANSACTION_REVERSE",
           entidade: "transacoes",
           entidadeId: original.id,
-          detalhes: {
-            motivo: data.motivo,
-            estornoId: estorno.id,
-          },
-        },
+          detalhes: { motivo: data.motivo, reversalId: estorno.id },
+          meta,
+        }),
       });
 
       return estorno;
     });
 
-    return { ok: true, reversal: created };
+    return { ok: true, reversal };
   }
 }

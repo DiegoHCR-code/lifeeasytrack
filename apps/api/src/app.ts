@@ -3,7 +3,7 @@ import cors from "cors";
 import { authRoutes } from "@modules/auth/auth.routes";
 import { financeRoutes } from "@modules/finance/finance.routes";
 import { errorMiddleware } from "@shared/middlewares/errorMiddleware";
-import { audit } from "@shared/http/audit.middleware";
+import { auditHttpWrites } from "@shared/http/audit.middleware";
 
 export const app = express();
 
@@ -17,4 +17,4 @@ app.use("/api/auth", authRoutes);
 app.use("/api/finance", financeRoutes);
 app.use(errorMiddleware);
 
-app.use(audit);
+app.use(auditHttpWrites);

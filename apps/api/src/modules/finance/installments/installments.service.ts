@@ -1,33 +1,63 @@
 import { z } from "zod";
 import { prisma } from "@shared/db/prisma";
-import { Prisma, StatusPagamento } from "@prisma/client";
-
-const competenciaSchema = z.string().regex(/^\d{4}-\d{2}$/, 'Use "YYYY-MM" (ex: 2026-02)');
+import {
+  OrigemTransacao,
+  Prisma,
+  StatusFatura,
+  StatusPagamento,
+  StatusParcela,
+  StatusPlanoParcelamento,
+  TipoConta,
+} from "@prisma/client";
+import { CreditCardInvoicesService } from "@modules/finance/credit-cards/credit-card-invoices.service";
+import { ensureInvoiceByCompetencia } from "@modules/finance/credit-cards/invoice-by-competencia";
+const competenciaSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}$/, 'Use "YYYY-MM" (ex: 2026-02)');
 
 const createPlanSchema = z.object({
   descricao: z.string().min(2),
   total: z.number().positive(),
-  numeroParcelas: z.number().int().min(2).max(60),
+  numeroParcelas: z.number().int().min(2).max(240),
   primeiraCompetencia: competenciaSchema,
+
+  contaId: z.string().uuid(),
   categoriaId: z.string().uuid().optional().nullable(),
-  contaId: z.string().uuid().optional().nullable(),
-  vencimentoDia: z.number().int().min(1).max(28).optional(), // opcional
-  metodoPagamento: z.string().min(2).optional(),
-  estabelecimento: z.string().min(2).optional(),
+
+  metodoPagamento: z.string().optional().nullable(),
+  estabelecimento: z.string().optional().nullable(),
 });
 
-function addMonths(competencia: string, add: number) {
-  const [y, m] = competencia.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1 + add, 1, 0, 0, 0));
-  const yy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  return `${yy}-${mm}`;
+const anticipateSchema = z.object({
+  count: z.number().int().min(1).max(240).optional(),
+  numeros: z.array(z.number().int().min(1)).optional(),
+  moveToCurrentInvoice: z.boolean().optional().default(true),
+});
+
+const cancelSchema = z.object({
+  motivo: z.string().min(3),
+});
+
+function addCompetencia(c: string, add: number) {
+  const [y, m] = c.split("-").map(Number);
+  const base = y * 12 + (m - 1);
+  const t = base + add;
+  const ny = Math.floor(t / 12);
+  const nm = (t % 12) + 1;
+  return `${ny}-${String(nm).padStart(2, "0")}`;
 }
 
-function competenceToDate(competencia: string, dia?: number) {
-  const [y, m] = competencia.split("-").map(Number);
-  const day = dia ?? 1;
-  return new Date(Date.UTC(y, m - 1, day, 0, 0, 0));
+function splitInstallments(total: number, n: number) {
+  const base = Math.floor((total / n) * 100) / 100;
+  const values = Array.from({ length: n }, () => base);
+  const sum = values.reduce((a, b) => a + b, 0);
+  const diff = Math.round((total - sum) * 100) / 100;
+  values[n - 1] = Math.round((values[n - 1] + diff) * 100) / 100;
+  return values;
+}
+
+function invoiceIsClosedOrPaid(status: StatusFatura) {
+  return status === StatusFatura.FECHADA || status === StatusFatura.PAGA;
 }
 
 export class InstallmentsService {
@@ -36,147 +66,303 @@ export class InstallmentsService {
       where: { usuarioId: userId },
       orderBy: { createdAt: "desc" },
       include: {
+        conta: { select: { id: true, nome: true, tipo: true } },
         categoria: { select: { id: true, nome: true } },
-        conta: { select: { id: true, nome: true } },
-        parcelas: {
-          orderBy: { numero: "asc" },
-          include: { transacao: true },
-        },
+        _count: { select: { parcelas: true } },
       },
     });
 
     return { ok: true, items };
   }
 
-  async getPlan(userId: string, id: string) {
+  async getPlan(userId: string, planId: string) {
     const plan = await prisma.planoParcelamento.findFirst({
-      where: { id, usuarioId: userId },
+      where: { id: planId, usuarioId: userId },
       include: {
+        conta: { select: { id: true, nome: true, tipo: true } },
         categoria: { select: { id: true, nome: true } },
-        conta: { select: { id: true, nome: true } },
-        parcelas: { orderBy: { numero: "asc" }, include: { transacao: true } },
+        parcelas: {
+          orderBy: { numero: "asc" },
+          include: {
+            transacao: {
+              select: {
+                id: true,
+                data: true,
+                status: true,
+                faturaCartao: {
+                  select: { id: true, competencia: true, status: true },
+                },
+              },
+            },
+          },
+        },
       },
     });
 
-    if (!plan) return { ok: false, message: "Plano de parcelamento não encontrado" };
+    if (!plan)
+      return { ok: false, statusCode: 404, message: "Plano não encontrado" };
     return { ok: true, plan };
   }
 
+  /**
+   * ✅ cria o plano + parcelas + transações já caindo na fatura correta
+   */
   async createPlan(userId: string, input: unknown) {
     const data = createPlanSchema.parse(input);
 
-    // valida ownership categoria/conta, se informadas
+    const conta = await prisma.conta.findFirst({
+      where: { id: data.contaId, usuarioId: userId },
+      select: { id: true, tipo: true },
+    });
+
+    if (!conta)
+      return { ok: false, statusCode: 400, message: "Conta inválida" };
+    if (conta.tipo !== TipoConta.CARTAO) {
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "Parcelamento exige conta tipo CARTAO",
+      };
+    }
+
     if (data.categoriaId) {
-      const cat = await prisma.categoria.findFirst({ where: { id: data.categoriaId, usuarioId: userId } });
-      if (!cat) return { ok: false, message: "Categoria inválida" };
+      const cat = await prisma.categoria.findFirst({
+        where: { id: data.categoriaId, usuarioId: userId },
+      });
+      if (!cat)
+        return { ok: false, statusCode: 400, message: "Categoria inválida" };
     }
 
-    if (data.contaId) {
-      const conta = await prisma.conta.findFirst({ where: { id: data.contaId, usuarioId: userId } });
-      if (!conta) return { ok: false, message: "Conta inválida" };
-    }
-
-    const valorParcela = Number((data.total / data.numeroParcelas).toFixed(2));
-
-    // Ajuste simples de centavos: última parcela recebe diferença
-    const totalCalculado = valorParcela * data.numeroParcelas;
-    const diff = Number((data.total - totalCalculado).toFixed(2));
+    const values = splitInstallments(data.total, data.numeroParcelas);
 
     const created = await prisma.$transaction(async (tx) => {
-      const plano = await tx.planoParcelamento.create({
+      const plan = await tx.planoParcelamento.create({
         data: {
+          usuarioId: userId,
           descricao: data.descricao,
           total: new Prisma.Decimal(data.total),
           numeroParcelas: data.numeroParcelas,
           primeiraCompetencia: data.primeiraCompetencia,
-          usuarioId: userId,
+          metodoPagamento: data.metodoPagamento ?? null,
+          estabelecimento: data.estabelecimento ?? null,
+          contaId: data.contaId,
           categoriaId: data.categoriaId ?? null,
-          contaId: data.contaId ?? null,
-          metodoPagamento: data.metodoPagamento,
-          estabelecimento: data.estabelecimento,
+          status: StatusPlanoParcelamento.ATIVO,
         },
       });
 
-      // cria parcelas + transações vinculadas
+      const parcelas = [];
+
       for (let i = 0; i < data.numeroParcelas; i++) {
         const numero = i + 1;
-        const competencia = addMonths(data.primeiraCompetencia, i);
-        const valor = numero === data.numeroParcelas ? Number((valorParcela + diff).toFixed(2)) : valorParcela;
+        const competencia = addCompetencia(data.primeiraCompetencia, i);
+        const valor = values[i];
 
+        // ✅ garante fatura do mês
+        const invoice = await ensureInvoiceByCompetencia(
+          userId,
+          data.contaId,
+          competencia,
+        );
+
+        // ✅ transação dentro do ciclo => cai na fatura correta
         const transacao = await tx.transacao.create({
           data: {
+            usuarioId: userId,
             descricao: `${data.descricao} (${numero}/${data.numeroParcelas})`,
             valor: new Prisma.Decimal(valor),
-            data: competenceToDate(competencia, data.vencimentoDia), // data da parcela (pode ser 1º dia do mês)
+            data: new Date(invoice.inicio),
             tipo: "DESPESA",
-            status: "PENDENTE",
-            usuarioId: userId,
+            status: StatusPagamento.PENDENTE,
+            contaId: data.contaId,
             categoriaId: data.categoriaId ?? null,
-            contaId: data.contaId ?? null,
+            origem: OrigemTransacao.PARCELA,
+            faturaCartaoId: invoice.id,
           },
         });
 
-        await tx.parcela.create({
+        const parcela = await tx.parcela.create({
           data: {
+            planoId: plan.id,
             numero,
             competencia,
             valor: new Prisma.Decimal(valor),
-            vencimento: data.vencimentoDia ? competenceToDate(competencia, data.vencimentoDia) : null,
-            planoId: plano.id,
+            status: StatusParcela.PENDENTE,
             transacaoId: transacao.id,
           },
         });
+
+        parcelas.push(parcela);
       }
 
-      return plano;
+      return { plan, parcelas };
     });
 
-    const planFull = await prisma.planoParcelamento.findUnique({
-      where: { id: created.id },
-      include: {
-        categoria: { select: { id: true, nome: true } },
-        conta: { select: { id: true, nome: true } },
-        parcelas: { orderBy: { numero: "asc" }, include: { transacao: true } },
-      },
-    });
-
-    return { ok: true, plan: planFull };
+    return { ok: true, ...created };
   }
 
-  async removePlan(userId: string, id: string) {
+  /**
+   * ✅ Antecipação:
+   * - marca parcela PAGA
+   * - marca transação PAGO
+   * - opcional: move para a fatura ABERTA atual
+   */
+  async anticipate(userId: string, planId: string, input: unknown) {
+    const opts = anticipateSchema.parse(input);
+
     const plan = await prisma.planoParcelamento.findFirst({
-      where: { id, usuarioId: userId },
-      include: { parcelas: true },
+      where: { id: planId, usuarioId: userId },
+      include: { conta: { select: { id: true, tipo: true } } },
     });
 
-    if (!plan) return { ok: false, message: "Plano não encontrado" };
+    if (!plan)
+      return { ok: false, statusCode: 404, message: "Plano não encontrado" };
+    if (plan.status !== StatusPlanoParcelamento.ATIVO)
+      return { ok: false, statusCode: 409, message: "Plano não está ATIVO" };
+    if (!plan.contaId || plan.conta?.tipo !== TipoConta.CARTAO)
+      return {
+        ok: false,
+        statusCode: 400,
+        message: "Plano exige conta CARTAO",
+      };
 
-    // Ao deletar o plano, parcelas deletam por cascade.
-    // Mas precisamos deletar também as transações vinculadas (porque parcela tem relação com transacao).
-    await prisma.$transaction(async (tx) => {
-      const parcelas = await tx.parcela.findMany({ where: { planoId: id }, select: { transacaoId: true } });
-
-      await tx.parcela.deleteMany({ where: { planoId: id } });
-      await tx.planoParcelamento.delete({ where: { id } });
-      await tx.transacao.deleteMany({ where: { id: { in: parcelas.map((p) => p.transacaoId) } } });
+    const pending = await prisma.parcela.findMany({
+      where: { planoId: planId, status: StatusParcela.PENDENTE },
+      orderBy: { numero: "asc" },
+      include: { transacao: { include: { faturaCartao: true } } },
     });
 
-    return { ok: true };
+    if (!pending.length)
+      return { ok: false, statusCode: 409, message: "Sem parcelas pendentes" };
+
+    let selected = pending;
+
+    if (opts.numeros?.length) {
+      const set = new Set(opts.numeros);
+      selected = pending.filter((p) => set.has(p.numero));
+    } else if (opts.count) {
+      selected = pending.slice(0, opts.count);
+    } else {
+      selected = pending.slice(0, 1);
+    }
+
+    // garante fatura aberta atual se moveToCurrentInvoice
+    let currentInvoice: { id: string; inicio: Date } | null = null;
+
+    if (opts.moveToCurrentInvoice) {
+      const invoicesSvc = new CreditCardInvoicesService();
+      const cur = await invoicesSvc.getCurrentInvoice(userId, plan.contaId);
+      if (!cur.ok) return cur as any;
+
+      if (cur.invoice) {
+        currentInvoice = { id: cur.invoice.id, inicio: cur.invoice.inicio };
+      }
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const p of selected) {
+          await tx.parcela.update({
+            where: { id: p.id },
+            data: { status: StatusParcela.PAGA },
+          });
+
+          if (!p.transacaoId) continue;
+
+          const st = p.transacao?.faturaCartao?.status;
+          if (st && invoiceIsClosedOrPaid(st)) {
+            throw new Error(
+              `Parcela ${p.numero} está em fatura FECHADA/PAGA e não pode ser antecipada`,
+            );
+          }
+
+          await tx.transacao.update({
+            where: { id: p.transacaoId },
+            data: {
+              status: StatusPagamento.PAGO,
+              ...(currentInvoice
+                ? {
+                    faturaCartaoId: currentInvoice.id,
+                    data: new Date(currentInvoice.inicio),
+                  }
+                : {}),
+            },
+          });
+        }
+      });
+    } catch (e: any) {
+      return {
+        ok: false,
+        statusCode: 409,
+        message: e?.message ?? "Falha ao antecipar parcelas",
+      };
+    }
+
+    return { ok: true, antecipadas: selected.map((s) => s.numero) };
   }
 
-  async setInstallmentStatus(userId: string, parcelaId: string, status: StatusPagamento) {
-    const parcela = await prisma.parcela.findFirst({
-      where: { id: parcelaId, plano: { usuarioId: userId } },
-      include: { transacao: true },
+  /**
+   * ✅ Cancelamento:
+   * - marca plano CANCELADO
+   * - cancela parcelas pendentes
+   * - remove transações (pra não entrar no fluxo)
+   * - bloqueia se alguma estiver em fatura FECHADA/PAGA
+   */
+  async cancelPlan(userId: string, planId: string, input: unknown) {
+    const data = cancelSchema.parse(input);
+
+    const plan = await prisma.planoParcelamento.findFirst({
+      where: { id: planId, usuarioId: userId },
     });
 
-    if (!parcela) return { ok: false, message: "Parcela não encontrada" };
+    if (!plan)
+      return { ok: false, statusCode: 404, message: "Plano não encontrado" };
+    if (plan.status === StatusPlanoParcelamento.CANCELADO)
+      return { ok: false, statusCode: 409, message: "Plano já está CANCELADO" };
 
-    const updated = await prisma.transacao.update({
-      where: { id: parcela.transacaoId },
-      data: { status },
+    const pending = await prisma.parcela.findMany({
+      where: { planoId: planId, status: StatusParcela.PENDENTE },
+      include: { transacao: { include: { faturaCartao: true } } },
+      orderBy: { numero: "asc" },
     });
 
-    return { ok: true, transaction: updated };
+    const blocked = pending.filter((p) => {
+      const st = p.transacao?.faturaCartao?.status;
+      return st ? invoiceIsClosedOrPaid(st) : false;
+    });
+
+    if (blocked.length) {
+      return {
+        ok: false,
+        statusCode: 409,
+        message:
+          "Não é possível cancelar: existem parcelas em fatura FECHADA/PAGA",
+        blockedParcelas: blocked.map((b) => b.numero),
+      };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.planoParcelamento.update({
+        where: { id: planId },
+        data: {
+          status: StatusPlanoParcelamento.CANCELADO,
+          canceladoEm: new Date(),
+          canceladoMotivo: data.motivo,
+        },
+      });
+
+      for (const p of pending) {
+        if (p.transacaoId) {
+          await tx.transacao.delete({ where: { id: p.transacaoId } });
+        }
+
+        await tx.parcela.update({
+          where: { id: p.id },
+          data: { status: StatusParcela.CANCELADA, transacaoId: null },
+        });
+      }
+    });
+
+    return { ok: true, canceledParcelas: pending.map((p) => p.numero) };
   }
 }

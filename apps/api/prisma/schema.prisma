@@ -45,6 +45,20 @@ enum OrigemTransacao {
 }
 
 /**
+ * ✅ NOVOS (parcelamentos premium)
+ */
+enum StatusPlanoParcelamento {
+  ATIVO
+  CANCELADO
+}
+
+enum StatusParcela {
+  PENDENTE
+  PAGA
+  CANCELADA
+}
+
+/**
  * =========================
  * AUTH
  * =========================
@@ -165,7 +179,7 @@ model Transacao {
   transacaoOriginal   Transacao?  @relation("EstornoOriginal", fields: [transacaoOriginalId], references: [id], onDelete: SetNull)
   estornos            Transacao[] @relation("EstornoOriginal")
 
-  // ✅ vínculo opcional com fatura do cartão (para bloqueios e auditoria)
+  // ✅ vínculo opcional com fatura do cartão
   faturaCartaoId String?
   faturaCartao   FaturaCartao? @relation(fields: [faturaCartaoId], references: [id], onDelete: SetNull)
 
@@ -215,7 +229,7 @@ model Orcamento {
 
 model AlertaOrcamento {
   id         String  @id @default(uuid())
-  percentual Int // ex: 80, 90, 100
+  percentual Int
   ativo      Boolean @default(true)
 
   orcamentoId String
@@ -239,9 +253,14 @@ model PlanoParcelamento {
   descricao           String
   total               Decimal
   numeroParcelas      Int
-  primeiraCompetencia String // "YYYY-MM" ex: "2026-02"
+  primeiraCompetencia String
   metodoPagamento     String?
   estabelecimento     String?
+
+  // ✅ PREMIUM
+  status          StatusPlanoParcelamento @default(ATIVO)
+  canceladoEm     DateTime?
+  canceladoMotivo String?
 
   usuarioId String
   usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
@@ -266,16 +285,19 @@ model PlanoParcelamento {
 model Parcela {
   id          String    @id @default(uuid())
   numero      Int
-  competencia String // "YYYY-MM"
+  competencia String
   valor       Decimal
   vencimento  DateTime?
+
+  // ✅ PREMIUM
+  status StatusParcela @default(PENDENTE)
 
   planoId String
   plano   PlanoParcelamento @relation(fields: [planoId], references: [id], onDelete: Cascade)
 
-  // 1:1 com a transação gerada
-  transacaoId String    @unique
-  transacao   Transacao @relation(fields: [transacaoId], references: [id], onDelete: Cascade)
+  // ✅ agora opcional (permite CANCELAR sem quebrar 1:1)
+  transacaoId String?    @unique
+  transacao   Transacao? @relation(fields: [transacaoId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
 
@@ -293,7 +315,7 @@ model Parcela {
 
 model FaturaCartao {
   id          String       @id @default(uuid())
-  competencia String // mês do vencimento "YYYY-MM"
+  competencia String
   status      StatusFatura @default(ABERTA)
 
   inicio     DateTime
@@ -337,11 +359,10 @@ model AjusteSaldo {
   conta   Conta  @relation(fields: [contaId], references: [id], onDelete: Cascade)
 
   data       DateTime
-  valor      Decimal // pode ser positivo ou negativo
+  valor      Decimal
   motivo     String
   referencia String?
 
-  // ✅ 1:1 opcional (o erro que você teve foi aqui; agora está corrigido)
   transacaoId String?    @unique
   transacao   Transacao? @relation(fields: [transacaoId], references: [id], onDelete: SetNull)
 
